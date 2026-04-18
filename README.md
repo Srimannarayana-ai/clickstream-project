@@ -24,6 +24,8 @@ Data is streamed to the `clickstream` topic in JSON format. Here is an example o
   "platform": "ios"
 } 
 
+```
+
 # 🚀 How to Run Locally
 
 ## Prerequisites
