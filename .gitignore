@@ -18,3 +18,7 @@ src/dlq_vault/
 # Binary dependencies and media assets
 *.jar
 *.mp4
+
+# Ensure portfolio visuals are never ignored
+!assets/flink_dag_screenshot.png
+!assets/20260602-0702-58.8399530.mp4

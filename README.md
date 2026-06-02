@@ -16,7 +16,8 @@ Legacy systems process behavioral data in nightly batches. This architecture gua
 
 ## 🏗️ Architecture & Execution Topologies
 
-<video controls src="20260602-0702-58.8399530.mp4" title="Title"></video>
+![Stream Processing DAG](./assets/flink_dag_screenshot.png)
+*💡 [Click here to view the live processing video snippet](./assets/20260602-0702-58.8399530.mp4)*
 
 ### The Core Infrastructure
 1. **The Ingest (Producer):** A Python-based mock generator continuously blasts simulated user traffic into our message broker, deliberately injecting structural anomalies (e.g., malformed strings) to validate system resilience under chaos.
@@ -43,10 +44,8 @@ This system was engineered to survive the harsh realities of distributed product
 
 Want to run this entire pipeline on your local machine?
 
-**1. Clone the repository and navigate to the directory:**
+**1. Clone the repository and navigate to the directory.**
 
-git clone [https://github.com/yourusername/realtime_clickstream_ai_engine.git](https://github.com/yourusername/realtime_clickstream_ai_engine.git)
-cd realtime_clickstream_ai_engine
 
 **2. Boot up the Dockerized infrastructure (Kafka & Flink):**
   
@@ -60,14 +59,14 @@ python -m venv .venv
 pip install pyflink chromadb faker confluent-kafka
 
 **4. Launch the Pipeline (Requires Two Terminals):**
-**Terminal 1 (Traffic Generator):** python src/producer.py
+Terminal 1 (Traffic Generator): python src/producer.py
 
-**Terminal 2 (Flink Processor):** python src/processor.py
+Terminal 2 (Flink Processor): python src/processor.py
 
 **5. View the Live Dashboards:**
-**Kafka Message Queue UI:** http://localhost:8080
+Kafka Message Queue UI: http://localhost:8080
 
-**Live Flink Processing DAG:** http://localhost:8083
+Live Flink Processing DAG: http://localhost:8083
 
 ##  🗺️ Project Roadmap
 [x] Phase 1: Real-Time Data Ingestion (Continuous Python payload generation to Kafka)
