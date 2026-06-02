@@ -1,65 +1,81 @@
-# Real-Time Clickstream & AI Context Engine
+# 🚀 Enterprise Real-Time Clickstream & AI Context Engine
 
-## 📖 Project Overview
-This project simulates the foundational infrastructure of a modern e-commerce data platform. It captures high-volume user interaction data (clickstreams) in real-time, providing the reliable "nervous system" required for downstream stream-processing and AI-driven personalization.
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
+![Apache Flink](https://img.shields.io/badge/Apache%20Flink-1.18.1-e6522c.svg)
+![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-Latest-black.svg)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector%20Storage-FF4B4B.svg)
+![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED.svg)
 
-### 🏗️ Current Architecture (Version 2: Stream Processing)
-The pipeline ingests raw JSON events into Apache Kafka and processes them in real-time using Apache Flink. Flink acts as the compute engine, aggressively filtering the firehose of clicks to isolate high-value business events (purchases) with sub-second latency.
+## 📖 Overview
+**What does this project do?** Imagine a busy e-commerce website where thousands of users are clicking, browsing, and buying every second. This pipeline acts as a high-speed, intelligent conveyor belt. It captures those raw clicks the exact millisecond they happen, filters out the noise, translates the high-value purchases into a "semantic memory," and securely stores them so downstream Artificial Intelligence (AI) recommendation models can query user behavior contextually.
 
-* **Data Generator:** Python (`faker`, `confluent-kafka`)
-* **Message Broker:** Apache Kafka (KRaft mode)
-* **Stream Processing Engine:** Apache Flink (PyFlink 1.18)
-* **Containerization:** Docker Desktop
-* **Monitoring:** Kafka UI & Flink Web Dashboard
+**Why does this matter?**
+Legacy systems process behavioral data in nightly batches. This architecture guarantees **sub-second reaction times**, allowing downstream LLMs and recommender systems to retrieve localized vector embeddings dynamically while the user is still active in the session.
 
-## 📊 Data Schema (The Clickstream Event)
-Data is streamed to the `clickstream` topic in JSON format. Here is an example of a single event:
+---
 
-```json
-{
-  "user_id": 4124,
-  "event_time": 1713292405.123,
-  "page_url": "[https://www.example.com/category/shoes](https://www.example.com/category/shoes)",
-  "action": "add_to_cart",
-  "platform": "ios"
-} 
+## 🏗️ Architecture & Execution Topologies
 
-```
+<video controls src="20260602-0702-58.8399530.mp4" title="Title"></video>
 
-# 🚀 How to Run Locally
+### The Core Infrastructure
+1. **The Ingest (Producer):** A Python-based mock generator continuously blasts simulated user traffic into our message broker, deliberately injecting structural anomalies (e.g., malformed strings) to validate system resilience under chaos.
+2. **The Broker (Apache Kafka):** An indestructible message queue organizing the massive data influx via localized Docker containers.
+3. **The Brain (Apache Flink):** A real-time stream processor executing SQL-based filtering and custom Python flat-mapping directly inside the active job loop.
+4. **The AI Memory (ChromaDB):** High-value events are transformed into semantic vector embeddings and stored inside a local vector abstraction layer (`chroma_vault`).
 
-## Prerequisites
-* Windows 10/11
-* Docker Desktop installed and running
-* Python 3.11.x (Strictly required for PyFlink compatibility)
-* Java 11 (Required for Flink local execution)
+### ⚙️ Operational Scaling & Parallelism
+**Local Deployment Context:** As depicted in the Flink Web UI screenshot, this localized Docker deployment executes under a **Strict Sequential Topology (Parallelism = 1)**. This single-core allocation is intentional for local state debugging, preventing thread collision during in-memory DLQ file locking on Windows architectures. 
 
-### Step-by-Step Setup
+**Production Scale-Out:** In a production Kubernetes deployment, this pipeline scales out horizontally. Flink's parallelism factor would be unbound, dynamically allocating multi-core TaskManagers to process Kafka partitions in parallel, while the ChromaDB sink logic scales behind a unified load balancer.
 
-# Start the Infrastructure
-# **PowerShell:**
-* docker-compose up -d
+---
 
-## Access the Monitoring UIs
-* **Kafka UI:** http://localhost:8080
-* **Flink MiniCluster UI:** http://localhost:8082 (Available while processor is running)
+## 🛡️ Enterprise Resiliency Features
+This system was engineered to survive the harsh realities of distributed production environments:
+* **Dead Letter Queues (DLQ):** The custom `Vector Processing: ChromaDB Upsert & DLQ Router` node safely isolates malformed payloads into timestamped filesystem vaults (`/dlq_vault`), ensuring the core stream graph never crashes.
+* **Idempotent Upserts:** If the network stutters and Kafka resends a batch, the pipeline uses deterministic UUID hashing to prevent duplicate embeddings from corrupting the AI context vector space.
+* **Micro-Batch Telemetry:** To avoid slow, row-by-row I/O bottlenecks, the system features an in-memory buffer that executes vector database writes dynamically. Processing latency and throughput rates are emitted via realtime telemetry.
 
-## Run the Real-Time Pipeline (Requires 2 Terminals)
-# **Terminal 1 (The Data Generator):**
-**PowerShell:**
-* .\.venv\Scripts\activate
-* pip install confluent-kafka faker apache-flink==1.18.1 setuptools==69.5.1
-* python src/producer.py
+---
 
-# **Terminal 2 (The Flink Engine):**
+## 🚀 Quickstart Guide
 
-# **PowerShell:**
-* .\.venv\Scripts\activate
-* python src/processor.py
+Want to run this entire pipeline on your local machine?
 
-### 🗺️ Project Roadmap
-[x] Phase 1: Real-Time Data Ingestion (Kafka + Python)
+**1. Clone the repository and navigate to the directory:**
 
-[x] Phase 2: Stream Processing (Apache Flink)
+git clone [https://github.com/yourusername/realtime_clickstream_ai_engine.git](https://github.com/yourusername/realtime_clickstream_ai_engine.git)
+cd realtime_clickstream_ai_engine
 
-[ ] Phase 3: AI Context Storage (PostgreSQL + pgvector)
+**2. Boot up the Dockerized infrastructure (Kafka & Flink):**
+  
+docker-compose up -d
+
+**3. Set up the Python Environment:**
+python -m venv .venv
+
+.\.venv\Scripts\activate
+
+pip install pyflink chromadb faker confluent-kafka
+
+**4. Launch the Pipeline (Requires Two Terminals):**
+**Terminal 1 (Traffic Generator):** python src/producer.py
+
+**Terminal 2 (Flink Processor):** python src/processor.py
+
+**5. View the Live Dashboards:**
+**Kafka Message Queue UI:** http://localhost:8080
+
+**Live Flink Processing DAG:** http://localhost:8083
+
+##  🗺️ Project Roadmap
+[x] Phase 1: Real-Time Data Ingestion (Continuous Python payload generation to Kafka)
+
+[x] Phase 2: Stream Processing (Apache Flink SQL filtering and stream compilation)
+
+[x] Phase 3: AI Context Storage (In-memory ChromaDB vector upserts)
+
+[x] Phase 4: Enterprise Hardening (Dead Letter Queues, telemetry, and exactly-once execution logic)
+
+[ ] Phase 5: Downstream LLM Integration (Future: Connect an OpenAI chatbot to read the ChromaDB contexts)

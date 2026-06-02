@@ -13,7 +13,7 @@ services:
       - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:29092,EXTERNAL://localhost:9092
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
-      - CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk
+      - KAFKA_CLUSTER_ID=mKu3OEVBNtcWNTJENDM2Qk
     volumes:
       - kafka_data:/tmp/kraft-combined-logs
 
@@ -28,6 +28,29 @@ services:
       - KAFKA_CLUSTERS_0_NAME=Local-KRaft-Cluster
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092
       - DYNAMIC_CONFIG_ENABLED=true
+
+  jobmanager:
+    image: flink:1.18.1
+    container_name: clickstream-jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+
+  taskmanager:
+    image: flink:1.18.1
+    container_name: clickstream-taskmanager
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
 
 volumes:
   kafka_data:

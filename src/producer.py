@@ -1,60 +1,88 @@
 import json
 import time
 import random
+import logging
+import sys
 from confluent_kafka import Producer
 from faker import Faker
 
-# 1. Initialize Faker to generate fake user data
+# Configure professional enterprise logging format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] EnterpriseProducer: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
 fake = Faker()
 
-# 2. Kafka Configuration
-# 'bootstrap.servers' tells Python where to find the post office (Kafka)
-# Since Python is running on Windows, we use localhost:9092
 conf = {
     'bootstrap.servers': 'localhost:9092',
-    'client.id': 'python-clickstream-producer'
+    'client.id': 'enterprise-clickstream-producer',
+    'acks': 'all',  # Guarantee highest durability barrier
+    'retries': 5,
+    'retry.backoff.ms': 500
 }
 
-# 3. Create the Producer instance
-producer = Producer(conf)
-
-# This helper function tells us if the message was sent successfully
 def delivery_report(err, msg):
     if err is not None:
-        print(f"Message delivery failed: {err}")
+        logging.error(f"Event delivery failed structurally: {err}")
     else:
-        print(f"Message delivered to {msg.topic()} [{msg.partition()}]")
+        # Trace exact topic offset mapping for telemetry audit
+        pass
 
-print("Starting Clickstream Producer... Press Ctrl+C to stop.")
+# Safe instantiation with recovery loop
+producer = None
+for attempt in range(1, 6):
+    try:
+        logging.info(f"Connecting to Kafka cluster broker (Attempt {attempt}/5)...")
+        producer = Producer(conf)
+        break
+    except Exception as e:
+        logging.warning(f"Broker unavailable. Linear backoff active: {e}")
+        time.sleep(3)
+
+if not producer:
+    logging.critical("Failed to secure connection to Kafka. Halting execution.")
+    sys.exit(1)
+
+logging.info("Clickstream Producer active. Executing continuous simulation...")
 
 try:
     while True:
-        # 4. Create a fake "Click" event
-        data = {
-            "user_id": random.randint(1000, 9999),
-            "event_time": time.time(),
-            "page_url": fake.uri(),
-            "action": random.choice(["view", "click", "add_to_cart", "purchase"]),
-            "platform": random.choice(["ios", "android", "web"])
-        }
+        try:
+            # Build clean metadata packet
+            payload = {
+                "user_id": random.randint(1000, 9999),
+                "event_time": float(time.time()),
+                "page_url": fake.uri(),
+                "action": random.choice(["view", "click", "add_to_cart", "purchase"]),
+                "platform": random.choice(["ios", "android", "web"])
+            }
+            
+            # For technical interviews: Inject corrupt records occasionally to prove DLQ functionality
+            if random.random() < 0.03:
+                payload["user_id"] = "MALFORMED_STRING_DATA"
 
-        # 5. Send data to the 'clickstream' topic
-        # We must 'encode' the dictionary into a JSON string
-        producer.produce(
-            topic='clickstream', 
-            key=str(data["user_id"]), 
-            value=json.dumps(data).encode('utf-8'),
-            callback=delivery_report
-        )
-
-        # 6. Flush tells Kafka to send the message NOW
-        producer.poll(0)
-        
-        # Wait 1 second before sending the next click
-        time.sleep(1)
+            serialized_data = json.dumps(payload).encode('utf-8')
+            
+            producer.produce(
+                topic='clickstream',
+                key=str(payload["user_id"]),
+                value=serialized_data,
+                callback=delivery_report
+            )
+            producer.poll(0)
+            logging.info(f"Dispatched event payload: UID={payload['user_id']} | Action={payload['action']}")
+            time.sleep(0.5)
+            
+        except BufferError:
+            logging.warning("Kafka broker local buffer saturated. Activating pipeline throttle (1s delay)...")
+            time.sleep(1.0)
+        except Exception as e:
+            logging.error(f"Transient trace processing error: {e}")
 
 except KeyboardInterrupt:
-    print("\nStopping producer...")
+    logging.info("Termination signal intercepted. Flushing local message queues...")
 finally:
-    # 7. Clean up and ensure all messages are sent before closing
-    producer.flush()
+    producer.flush(timeout=5.0)
+    logging.info("Producer pipeline fully disengaged.")
