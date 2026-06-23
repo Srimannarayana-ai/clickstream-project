@@ -5,9 +5,17 @@ env/
 __pycache__/
 *.pyc
 
-# Project Vaults (Critical: Never push raw data to GitHub)
+# CRITICAL: Never push cloud credentials to GitHub
+gcp_credentials.json
+src/gcp_credentials.json
+*-credentials.json
+service-account*.json
+
+# Project Vaults (never push raw data or local state)
 src/chroma_vault/
 src/dlq_vault/
+chroma_vault/
+dlq_vault/
 
 # IDE files
 .vscode/
@@ -19,6 +27,6 @@ src/dlq_vault/
 *.jar
 *.mp4
 
-# Ensure portfolio visuals are never ignored
-!assets/flink_dag_screenshot.png
-!assets/20260602-0702-58.8399530.mp4
+# Keep portfolio visuals tracked even though media is ignored above
+!assets/bigquery_output.png
+!assets/*.png
