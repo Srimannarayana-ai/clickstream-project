@@ -5,6 +5,7 @@
 ![BigQuery](https://img.shields.io/badge/Google%20BigQuery-Warehouse-4285F4.svg)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector%20Store-FF4B4B.svg)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)
+![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-2.9-017CEE.svg)
 
 ## Overview
 
@@ -24,7 +25,9 @@ This is a learning project built with free-tier tools. It runs locally with Dock
 ```
 Producer  →  Kafka  →  Processor  →  ┬─→  ChromaDB   (AI vector store)
 (events)    (queue)   (filter +      └─→  BigQuery   (cloud warehouse)
-                       validate)
+                       validate)              ↑
+                                              │
+                                    Airflow DAG (daily health check)
 ```
 
 ### Components
@@ -39,11 +42,70 @@ Producer  →  Kafka  →  Processor  →  ┬─→  ChromaDB   (AI vector stor
 
 5. **BigQuery** — stores each purchase as a structured row in a cloud warehouse table for SQL analytics.
 
+6. **Apache Airflow** — schedules and monitors warehouse health checks via DAGs in `dags/`. The producer and processor still run locally; Airflow tracks daily BigQuery validation runs, retries, and execution history in its UI.
+
 ### Verified Output
 
 Purchase events landing in the BigQuery warehouse table, queried with SQL:
 
 ![BigQuery purchase events](./assets/bigquery_output.png)
+
+---
+
+## Phase 6 — Orchestration (Apache Airflow)
+
+Phase 6 adds **scheduling and monitoring** for the BigQuery warehouse fork. Stream ingestion (Phases 1–5) is unchanged — producer and processor still run as local Python processes.
+
+### What was added
+
+| Item | Purpose |
+|------|---------|
+| `docker-compose.yml` — `airflow-postgres`, `airflow-init`, `airflow` | Airflow metadata DB, one-shot setup, scheduler + webserver |
+| `dags/clickstream_pipeline_health.py` | Daily DAG that validates the warehouse table and summarizes recent purchases |
+| `logs/` | Airflow runtime logs (gitignored except `.gitkeep`) |
+| `google_cloud_default` connection | Auto-configured in Docker via `_AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT` |
+
+### DAG: `clickstream_pipeline_health`
+
+Runs on a **daily schedule** (`@daily`). Tasks run in order:
+
+1. **`verify_warehouse_table`** — confirms `purchase_events` is reachable in BigQuery.
+2. **`summarize_recent_purchases`** — counts purchases and latest `ingested_at` for the last 24 hours.
+
+Both tasks use the `google_cloud_default` connection, which points to the mounted credentials file at `/opt/airflow/gcp_credentials.json` inside the container.
+
+### Verified Output
+
+Successful DAG run in the Airflow UI — both warehouse health tasks green:
+
+![Airflow DAG success](./assets/airflow_dag_success.png)
+
+### Running Phase 6
+
+```bash
+# 1. Start Docker (includes Airflow)
+docker-compose up -d
+
+# 2. Open Airflow UI
+#    http://localhost:8088  (login: admin / admin)
+
+# 3. Unpause the DAG and trigger manually, or wait for the daily schedule
+
+# 4. (Recommended) Run producer + processor first so BigQuery has fresh data
+python src/producer.py    # Terminal 1
+python src/processor.py   # Terminal 2
+```
+
+**Note:** `clickstream-airflow-init` exits after startup — that is expected. It migrates the database, installs the Google provider, and creates the admin user once per `docker-compose up`.
+
+### Service ports
+
+| Service | URL / Port | Notes |
+|---------|------------|-------|
+| Airflow UI | http://localhost:8088 | Login: `admin` / `admin` |
+| Kafka UI | http://localhost:8080 | Browse topics and messages |
+| Flink UI | http://localhost:8081 | Infrastructure only; processor is Python |
+| Kafka broker | `localhost:9092` | Used by producer/processor — **not** a browser URL |
 
 ---
 
@@ -68,7 +130,24 @@ Purchase events landing in the BigQuery warehouse table, queried with SQL:
 | AI vector store | ChromaDB |
 | Cloud warehouse | Google BigQuery (free sandbox tier) |
 | Containerization | Docker Compose |
-| Monitoring UI | Kafka UI |
+| Orchestration | Apache Airflow 2.9 (LocalExecutor) |
+| Monitoring UI | Kafka UI, Airflow UI |
+
+---
+
+## Requirements
+
+Python dependencies for **local scripts** (producer, processor, and upcoming Phase 7 API) live in `requirements.txt`:
+
+| Package | Used by |
+|---------|---------|
+| `confluent-kafka`, `faker` | Phase 1 — producer |
+| `chromadb` | Phase 3 — ChromaDB upserts |
+| `google-cloud-bigquery`, `google-auth` | Phase 5 — BigQuery fork |
+| `anthropic`, `fastapi`, `uvicorn`, `pydantic` | Phase 7 — LLM recommendation API (planned) |
+| `apache-flink`, `dbt-bigquery` | Reserved for future Flink/dbt extensions |
+
+**Airflow is not installed locally.** It runs inside the `apache/airflow:2.9.2-python3.11` Docker image. The Google BigQuery provider is installed at container startup via `_PIP_ADDITIONAL_REQUIREMENTS`.
 
 ---
 
@@ -76,10 +155,12 @@ Purchase events landing in the BigQuery warehouse table, queried with SQL:
 
 **1. Clone the repository and navigate into it.**
 
-**2. Start the Docker infrastructure (Kafka + Kafka UI):**
+**2. Start the Docker infrastructure (Kafka, Flink, Airflow):**
 ```bash
 docker-compose up -d
 ```
+
+Airflow UI: http://localhost:8088 (login `admin` / `admin`). DAGs live in `dags/` and are paused on first load.
 
 **3. Set up the Python environment:**
 ```bash
@@ -89,7 +170,7 @@ pip install -r requirements.txt
 ```
 
 **4. Add BigQuery credentials:**
-Create a Google Cloud service account with BigQuery Data Editor and BigQuery Job User roles, download the JSON key, and save it as `src/gcp_credentials.json`. This file is gitignored and must never be committed.
+Create a Google Cloud service account with BigQuery Data Editor and BigQuery Job User roles, download the JSON key, and save it as `src/gcp_credentials.json`. This file is gitignored and must never be committed. The same file is mounted into the Airflow container for DAG tasks.
 
 **5. Run the pipeline (two terminals):**
 ```bash
@@ -102,13 +183,34 @@ python src/processor.py
 
 **6. Verify the output:**
 - Kafka UI: http://localhost:8080
+- Airflow: http://localhost:8088 — DAG `clickstream_pipeline_health`
 - BigQuery: run `SELECT * FROM clickstream_analytics.purchase_events ORDER BY ingested_at DESC LIMIT 20` in the BigQuery console.
+
+---
+
+## Project Structure
+
+```
+realtime_clickstream_ai_engine/
+├── dags/                          # Airflow DAG definitions (Phase 6)
+│   └── clickstream_pipeline_health.py
+├── logs/                          # Airflow runtime logs (gitignored)
+├── src/
+│   ├── producer.py                # Phase 1 — Kafka event generator
+│   ├── processor.py               # Phases 2–5 — filter, validate, dual-fork
+│   ├── gcp_credentials.json       # GCP key (gitignored — you provide this)
+│   ├── chroma_vault/              # ChromaDB data (gitignored)
+│   └── dlq_vault/                 # Dead-letter files (gitignored)
+├── docker-compose.yml             # Kafka, Flink, Airflow, Postgres
+├── requirements.txt               # Local Python dependencies
+└── README.md
+```
 
 ---
 
 ## Notes on Scale
 
-This runs single-threaded on one machine, which is intentional for local development and debugging. In a production deployment, the processor would run with multiple Kafka partitions and parallel consumers, the warehouse writes would use streaming inserts instead of load jobs for lower latency, and orchestration would be handled by a scheduler such as Apache Airflow.
+This runs single-threaded on one machine, which is intentional for local development and debugging. In a production deployment, the processor would run with multiple Kafka partitions and parallel consumers, the warehouse writes would use streaming inserts instead of load jobs for lower latency, and producer/processor jobs would be containerized and scheduled entirely through Airflow rather than manual terminals.
 
 ---
 
@@ -119,5 +221,5 @@ This runs single-threaded on one machine, which is intentional for local develop
 - [x] Phase 3 — AI context storage (ChromaDB vector upserts)
 - [x] Phase 4 — Resiliency (dead-letter queue, idempotent upserts, batch telemetry)
 - [x] Phase 5 — Cloud warehouse (dual-fork to Google BigQuery)
-- [ ] Phase 6 — Orchestration (Apache Airflow for scheduling and monitoring)
+- [x] Phase 6 — Orchestration (Apache Airflow for scheduling and monitoring)
 - [ ] Phase 7 — AI output layer (LLM reads ChromaDB to serve recommendations)

@@ -52,6 +52,81 @@ services:
         jobmanager.rpc.address: jobmanager
         taskmanager.numberOfTaskSlots: 2
 
+  # ── Airflow metadata database (bookkeeping only — NOT BigQuery) ──────────────
+  airflow-postgres:
+    image: postgres:15
+    container_name: clickstream-airflow-db
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+
+  # ── One-shot init: migrate DB, install providers, create admin user ─────────
+  airflow-init:
+    image: apache/airflow:2.9.2-python3.11
+    container_name: clickstream-airflow-init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - _AIRFLOW_DB_MIGRATE=true
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=admin
+      - _AIRFLOW_WWW_USER_PASSWORD=admin
+      - _PIP_ADDITIONAL_REQUIREMENTS=apache-airflow-providers-google
+      - _AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT=google-cloud-platform:///?extra__google_cloud_platform__key_path=/opt/airflow/gcp_credentials.json&extra__google_cloud_platform__project=clickstream-project-500108
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./src/gcp_credentials.json:/opt/airflow/gcp_credentials.json:ro
+    user: "50000:0"
+    command: version
+    restart: "no"
+
+  # ── Airflow (scheduler + webserver in one container, LocalExecutor) ─────────
+  airflow:
+    image: apache/airflow:2.9.2-python3.11
+    container_name: clickstream-airflow
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+      - GOOGLE_APPLICATION_CREDENTIALS=/opt/airflow/gcp_credentials.json
+      - _PIP_ADDITIONAL_REQUIREMENTS=apache-airflow-providers-google
+      - _AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT=google-cloud-platform:///?extra__google_cloud_platform__key_path=/opt/airflow/gcp_credentials.json&extra__google_cloud_platform__project=clickstream-project-500108
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./src/gcp_credentials.json:/opt/airflow/gcp_credentials.json:ro
+    user: "50000:0"
+    command: >
+      bash -c "airflow scheduler & exec airflow webserver"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
 volumes:
   kafka_data:
+    driver: local
+  airflow_db_data:
     driver: local

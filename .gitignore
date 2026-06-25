@@ -10,12 +10,18 @@ gcp_credentials.json
 src/gcp_credentials.json
 *-credentials.json
 service-account*.json
+.env
+.env.*
 
 # Project Vaults (never push raw data or local state)
 src/chroma_vault/
 src/dlq_vault/
 chroma_vault/
 dlq_vault/
+
+# Airflow runtime logs (keep folder via .gitkeep)
+logs/**
+!logs/.gitkeep
 
 # IDE files
 .vscode/
@@ -29,4 +35,5 @@ dlq_vault/
 
 # Keep portfolio visuals tracked even though media is ignored above
 !assets/bigquery_output.png
+!assets/airflow_dag_success.png
 !assets/*.png
