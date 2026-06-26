@@ -24,8 +24,12 @@ This is a learning project built with free-tier tools. It runs locally with Dock
 
 ```
 Producer  →  Kafka  →  Processor  →  ┬─→  ChromaDB   (AI vector store)
-(events)    (queue)   (filter +      └─→  BigQuery   (cloud warehouse)
-                       validate)              ↑
+(events)    (queue)   (filter +      │       ↓
+                       validate)      │   Recommendation API (Phase 7)
+                                      │       ↓
+                                      │   Mock LLM / Claude
+                                      └─→  BigQuery   (cloud warehouse)
+                                              ↑
                                               │
                                     Airflow DAG (daily health check)
 ```
@@ -43,6 +47,8 @@ Producer  →  Kafka  →  Processor  →  ┬─→  ChromaDB   (AI vector stor
 5. **BigQuery** — stores each purchase as a structured row in a cloud warehouse table for SQL analytics.
 
 6. **Apache Airflow** — schedules and monitors warehouse health checks via DAGs in `dags/`. The producer and processor still run locally; Airflow tracks daily BigQuery validation runs, retries, and execution history in its UI.
+
+7. **Recommendation API** (`src/recommendation_api.py`) — FastAPI service that reads purchase context from ChromaDB and returns LLM-generated recommendations. Defaults to **mock mode ($0)**; optional Anthropic Claude when configured.
 
 ### Verified Output
 
@@ -131,6 +137,7 @@ python src/processor.py   # Terminal 2
 | Cloud warehouse | Google BigQuery (free sandbox tier) |
 | Containerization | Docker Compose |
 | Orchestration | Apache Airflow 2.9 (LocalExecutor) |
+| AI output | FastAPI + Anthropic Claude (optional) / mock LLM (default) |
 | Monitoring UI | Kafka UI, Airflow UI |
 
 ---
@@ -144,10 +151,71 @@ Python dependencies for **local scripts** (producer, processor, and upcoming Pha
 | `confluent-kafka`, `faker` | Phase 1 — producer |
 | `chromadb` | Phase 3 — ChromaDB upserts |
 | `google-cloud-bigquery`, `google-auth` | Phase 5 — BigQuery fork |
-| `anthropic`, `fastapi`, `uvicorn`, `pydantic` | Phase 7 — LLM recommendation API (planned) |
+| `anthropic`, `fastapi`, `uvicorn`, `pydantic`, `python-dotenv` | Phase 7 — LLM recommendation API |
 | `apache-flink`, `dbt-bigquery` | Reserved for future Flink/dbt extensions |
 
 **Airflow is not installed locally.** It runs inside the `apache/airflow:2.9.2-python3.11` Docker image. The Google BigQuery provider is installed at container startup via `_PIP_ADDITIONAL_REQUIREMENTS`.
+
+**Phase 7 LLM cost:** Mock mode is free. Real Claude API calls bill separately from a Claude Pro chat subscription — see Phase 7 section below.
+
+---
+
+## Phase 7 — AI output layer (Recommendation API)
+
+Phase 7 closes the loop: ChromaDB purchase vectors become **personalized recommendations** via a FastAPI service.
+
+### Flow
+
+1. Client sends `user_id` (+ optional question) to `POST /recommendations`.
+2. API loads that user's purchases from ChromaDB (`realtime_user_contexts`).
+3. API finds **similar shoppers' purchases** via vector search.
+4. **Mock LLM** (default) or **Claude** generates recommendations from that context.
+
+### Cost
+
+| Mode | Cost | When to use |
+|------|------|-------------|
+| `USE_MOCK_LLM=true` (default) | **$0** | Development, demos, portfolio proof |
+| `USE_MOCK_LLM=false` + `ANTHROPIC_API_KEY` | Pay-per-token (API) | Real AI output; use Haiku + few calls for pennies |
+
+Claude Pro (chat subscription) does **not** replace the API key for this service.
+
+### Setup
+
+```bash
+cp .env.example .env          # optional — mock mode works without .env
+pip install -r requirements.txt
+```
+
+### Run (after producer + processor have filled ChromaDB)
+
+```bash
+# Terminal 3 — recommendation API
+uvicorn src.recommendation_api:app --reload --port 8090
+```
+
+- Swagger UI: http://localhost:8090/docs
+- Health: http://localhost:8090/health
+- Debug context: `GET /users/{user_id}/context`
+- Recommendations: `POST /recommendations` with body `{"user_id": 1234}`
+
+### Enable real Claude (optional)
+
+In `.env`:
+
+```
+USE_MOCK_LLM=false
+ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_MODEL=claude-3-haiku-20240307
+```
+
+Restart uvicorn. Each request sends one small API call.
+
+### Verified Output
+
+Successful recommendation from ChromaDB context via mock LLM (`POST /recommendations`, HTTP 200):
+
+![Recommendation API success](./assets/recommendation_api_success.png)
 
 ---
 
@@ -198,9 +266,11 @@ realtime_clickstream_ai_engine/
 ├── src/
 │   ├── producer.py                # Phase 1 — Kafka event generator
 │   ├── processor.py               # Phases 2–5 — filter, validate, dual-fork
+│   ├── recommendation_api.py    # Phase 7 — FastAPI + ChromaDB + LLM
 │   ├── gcp_credentials.json       # GCP key (gitignored — you provide this)
 │   ├── chroma_vault/              # ChromaDB data (gitignored)
 │   └── dlq_vault/                 # Dead-letter files (gitignored)
+├── .env.example                   # Phase 7 config template (copy to .env)
 ├── docker-compose.yml             # Kafka, Flink, Airflow, Postgres
 ├── requirements.txt               # Local Python dependencies
 └── README.md
@@ -222,4 +292,4 @@ This runs single-threaded on one machine, which is intentional for local develop
 - [x] Phase 4 — Resiliency (dead-letter queue, idempotent upserts, batch telemetry)
 - [x] Phase 5 — Cloud warehouse (dual-fork to Google BigQuery)
 - [x] Phase 6 — Orchestration (Apache Airflow for scheduling and monitoring)
-- [ ] Phase 7 — AI output layer (LLM reads ChromaDB to serve recommendations)
+- [x] Phase 7 — AI output layer (LLM reads ChromaDB to serve recommendations)

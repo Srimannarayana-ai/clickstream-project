@@ -12,6 +12,7 @@ src/gcp_credentials.json
 service-account*.json
 .env
 .env.*
+!.env.example
 
 # Project Vaults (never push raw data or local state)
 src/chroma_vault/
@@ -36,4 +37,5 @@ logs/**
 # Keep portfolio visuals tracked even though media is ignored above
 !assets/bigquery_output.png
 !assets/airflow_dag_success.png
+!assets/recommendation_api_success.png
 !assets/*.png
