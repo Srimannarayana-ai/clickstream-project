@@ -9,287 +9,194 @@
 
 ## Overview
 
-This project simulates how an e-commerce platform processes user activity in real time. It captures clickstream events as they happen, filters them down to purchases, and writes each purchase to two destinations at once:
+I built this project to practice a full real-time data pipeline: simulated e-commerce clickstream events flow through Kafka, get filtered and validated, then land in two places at once — **ChromaDB** for vector search and **Google BigQuery** for SQL analytics. A FastAPI layer on top reads the vector store and returns purchase recommendations.
 
-- **ChromaDB** — a vector store, so an AI model can later retrieve similar user behavior for recommendations.
-- **Google BigQuery** — a cloud data warehouse, so analysts can query the same data with SQL for dashboards and reporting.
-
-This is called a **dual-fork** pattern: one event, two stores, two different downstream jobs. It mirrors how real data teams serve both AI/ML systems and business intelligence from the same event stream without maintaining separate pipelines.
-
-This is a learning project built with free-tier tools. It runs locally with Docker, with the warehouse layer hosted on Google Cloud's free BigQuery sandbox.
+The pattern is a **dual-fork**: one event stream, two downstream consumers with different jobs (ML context vs. warehouse reporting). Everything runs locally with Docker except BigQuery, which uses Google's free sandbox tier.
 
 ---
 
 ## Architecture
 
 ```
-Producer  →  Kafka  →  Processor  →  ┬─→  ChromaDB   (AI vector store)
+Producer  →  Kafka  →  Processor  →  ┬─→  ChromaDB   (vector store)
 (events)    (queue)   (filter +      │       ↓
-                       validate)      │   Recommendation API (Phase 7)
+                       validate)      │   Recommendation API
                                       │       ↓
-                                      │   Mock LLM / Claude
-                                      └─→  BigQuery   (cloud warehouse)
+                                      │   Mock / Claude
+                                      └─→  BigQuery   (warehouse)
                                               ↑
                                               │
-                                    Airflow DAG (daily health check)
+                                    Airflow (daily health check)
 ```
 
 ### Components
 
-1. **Producer** (`src/producer.py`) — generates simulated clickstream events using the Faker library and publishes them to Kafka. It deliberately injects a small percentage of malformed records to test the pipeline's error handling.
+1. **Producer** (`src/producer.py`) — generates clickstream events with Faker and publishes to Kafka. Roughly 3% of records are intentionally malformed to exercise the dead-letter path.
 
-2. **Kafka** — acts as the message queue between the producer and processor. It decouples the two, so if the processor slows down or restarts, events wait safely in the queue instead of being lost.
+2. **Kafka** — buffers events between producer and processor so short processor restarts do not lose data.
 
-3. **Processor** (`src/processor.py`) — consumes events from Kafka, keeps only purchase events, validates them, then writes each valid event to both ChromaDB and BigQuery. Invalid records are routed to a dead-letter queue.
+3. **Processor** (`src/processor.py`) — consumes the stream, keeps purchase events, validates them, and writes each batch to ChromaDB and BigQuery. Bad records go to `src/dlq_vault/`.
 
-4. **ChromaDB** — stores each purchase as a vector embedding for AI-driven similarity search.
+4. **ChromaDB** — stores purchase documents for similarity search (`src/chroma_vault/`, collection `realtime_user_contexts`).
 
-5. **BigQuery** — stores each purchase as a structured row in a cloud warehouse table for SQL analytics.
+5. **BigQuery** — stores structured rows in `clickstream_analytics.purchase_events`.
 
-6. **Apache Airflow** — schedules and monitors warehouse health checks via DAGs in `dags/`. The producer and processor still run locally; Airflow tracks daily BigQuery validation runs, retries, and execution history in its UI.
+6. **Airflow** — daily DAG in `dags/` that checks the warehouse table is reachable and summarizes recent ingest volume. Producer and processor still run as local Python processes.
 
-7. **Recommendation API** (`src/recommendation_api.py`) — FastAPI service that reads purchase context from ChromaDB and returns LLM-generated recommendations. Defaults to **mock mode ($0)**; optional Anthropic Claude when configured.
+7. **Recommendation API** (`src/recommendation_api.py`) — FastAPI service on port 8090. Pulls a user's purchase history from ChromaDB, finds similar shoppers, and returns a recommendation. Defaults to a local mock response; optional Claude integration via `.env`.
 
-### Verified Output
-
-Purchase events landing in the BigQuery warehouse table, queried with SQL:
+### Verified output — BigQuery
 
 ![BigQuery purchase events](./assets/bigquery_output.png)
 
 ---
 
-## Phase 6 — Orchestration (Apache Airflow)
+## Orchestration (Airflow)
 
-Phase 6 adds **scheduling and monitoring** for the BigQuery warehouse fork. Stream ingestion (Phases 1–5) is unchanged — producer and processor still run as local Python processes.
+I added Airflow to schedule warehouse monitoring instead of checking BigQuery manually.
 
-### What was added
+| Piece | Role |
+|-------|------|
+| `airflow-postgres`, `airflow-init`, `airflow` in `docker-compose.yml` | Metadata DB, one-shot setup, scheduler + UI |
+| `dags/clickstream_pipeline_health.py` | Daily DAG with two tasks |
+| `google_cloud_default` connection | Wired in compose to the mounted GCP key |
 
-| Item | Purpose |
-|------|---------|
-| `docker-compose.yml` — `airflow-postgres`, `airflow-init`, `airflow` | Airflow metadata DB, one-shot setup, scheduler + webserver |
-| `dags/clickstream_pipeline_health.py` | Daily DAG that validates the warehouse table and summarizes recent purchases |
-| `logs/` | Airflow runtime logs (gitignored except `.gitkeep`) |
-| `google_cloud_default` connection | Auto-configured in Docker via `_AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT` |
+**DAG tasks** (run in order):
 
-### DAG: `clickstream_pipeline_health`
-
-Runs on a **daily schedule** (`@daily`). Tasks run in order:
-
-1. **`verify_warehouse_table`** — confirms `purchase_events` is reachable in BigQuery.
-2. **`summarize_recent_purchases`** — counts purchases and latest `ingested_at` for the last 24 hours.
-
-Both tasks use the `google_cloud_default` connection, which points to the mounted credentials file at `/opt/airflow/gcp_credentials.json` inside the container.
-
-### Verified Output
-
-Successful DAG run in the Airflow UI — both warehouse health tasks green:
+1. `verify_warehouse_table` — BigQuery table responds
+2. `summarize_recent_purchases` — row count and latest `ingested_at` for the last 24 hours
 
 ![Airflow DAG success](./assets/airflow_dag_success.png)
 
-### Running Phase 6
+**Run it:**
 
 ```bash
-# 1. Start Docker (includes Airflow)
 docker-compose up -d
-
-# 2. Open Airflow UI
-#    http://localhost:8088  (login: admin / admin)
-
-# 3. Unpause the DAG and trigger manually, or wait for the daily schedule
-
-# 4. (Recommended) Run producer + processor first so BigQuery has fresh data
-python src/producer.py    # Terminal 1
-python src/processor.py   # Terminal 2
+# UI: http://localhost:8088  (admin / admin)
+# Unpause clickstream_pipeline_health, then trigger or wait for @daily
 ```
 
-**Note:** `clickstream-airflow-init` exits after startup — that is expected. It migrates the database, installs the Google provider, and creates the admin user once per `docker-compose up`.
+`clickstream-airflow-init` exiting after startup is normal — it only migrates the DB and creates the admin user.
 
-### Service ports
-
-| Service | URL / Port | Notes |
-|---------|------------|-------|
-| Airflow UI | http://localhost:8088 | Login: `admin` / `admin` |
-| Kafka UI | http://localhost:8080 | Browse topics and messages |
-| Flink UI | http://localhost:8081 | Infrastructure only; processor is Python |
-| Kafka broker | `localhost:9092` | Used by producer/processor — **not** a browser URL |
+| Service | URL |
+|---------|-----|
+| Airflow | http://localhost:8088 |
+| Kafka UI | http://localhost:8080 |
+| Flink UI | http://localhost:8081 |
+| Kafka broker (apps) | `localhost:9092` — not a browser URL |
 
 ---
 
-## Resiliency Features
+## Recommendation API
 
-- **Dead-Letter Queue (DLQ):** Malformed records are written to timestamped files in `src/dlq_vault/` instead of crashing the pipeline. This keeps the stream running even when bad data arrives.
+The last piece reads ChromaDB and returns suggestions for a given `user_id`.
 
-- **Idempotent upserts:** Each event is assigned a deterministic UUID generated from its content. If Kafka redelivers the same event, it updates the existing record rather than creating a duplicate.
+**Flow:** `POST /recommendations` → load user purchases → vector search for similar buyers → mock or Claude response.
 
-- **Independent fork failure handling:** If one destination (ChromaDB or BigQuery) fails, the other still completes, and the failed write is logged to the DLQ. One store going down does not take down the other.
+![Recommendation API success](./assets/recommendation_api_success.png)
 
-- **Batch writes with telemetry:** Events are buffered and flushed in small batches rather than one at a time, with latency and throughput logged on each flush.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Event ingestion | Apache Kafka (KRaft mode) |
-| Stream processing | Python (confluent-kafka consumer) |
-| AI vector store | ChromaDB |
-| Cloud warehouse | Google BigQuery (free sandbox tier) |
-| Containerization | Docker Compose |
-| Orchestration | Apache Airflow 2.9 (LocalExecutor) |
-| AI output | FastAPI + Anthropic Claude (optional) / mock LLM (default) |
-| Monitoring UI | Kafka UI, Airflow UI |
-
----
-
-## Requirements
-
-Python dependencies for **local scripts** (producer, processor, and upcoming Phase 7 API) live in `requirements.txt`:
-
-| Package | Used by |
-|---------|---------|
-| `confluent-kafka`, `faker` | Phase 1 — producer |
-| `chromadb` | Phase 3 — ChromaDB upserts |
-| `google-cloud-bigquery`, `google-auth` | Phase 5 — BigQuery fork |
-| `anthropic`, `fastapi`, `uvicorn`, `pydantic`, `python-dotenv` | Phase 7 — LLM recommendation API |
-| `apache-flink`, `dbt-bigquery` | Reserved for future Flink/dbt extensions |
-
-**Airflow is not installed locally.** It runs inside the `apache/airflow:2.9.2-python3.11` Docker image. The Google BigQuery provider is installed at container startup via `_PIP_ADDITIONAL_REQUIREMENTS`.
-
-**Phase 7 LLM cost:** Mock mode is free. Real Claude API calls bill separately from a Claude Pro chat subscription — see Phase 7 section below.
-
----
-
-## Phase 7 — AI output layer (Recommendation API)
-
-Phase 7 closes the loop: ChromaDB purchase vectors become **personalized recommendations** via a FastAPI service.
-
-### Flow
-
-1. Client sends `user_id` (+ optional question) to `POST /recommendations`.
-2. API loads that user's purchases from ChromaDB (`realtime_user_contexts`).
-3. API finds **similar shoppers' purchases** via vector search.
-4. **Mock LLM** (default) or **Claude** generates recommendations from that context.
-
-### Cost
-
-| Mode | Cost | When to use |
-|------|------|-------------|
-| `USE_MOCK_LLM=true` (default) | **$0** | Development, demos, portfolio proof |
-| `USE_MOCK_LLM=false` + `ANTHROPIC_API_KEY` | Pay-per-token (API) | Real AI output; use Haiku + few calls for pennies |
-
-Claude Pro (chat subscription) does **not** replace the API key for this service.
-
-### Setup
+**Run it** (after producer + processor have written to ChromaDB):
 
 ```bash
-cp .env.example .env          # optional — mock mode works without .env
+cp .env.example .env    # optional; mock mode works without changes
 pip install -r requirements.txt
-```
-
-### Run (after producer + processor have filled ChromaDB)
-
-```bash
-# Terminal 3 — recommendation API
 uvicorn src.recommendation_api:app --reload --port 8090
 ```
 
-- Swagger UI: http://localhost:8090/docs
-- Health: http://localhost:8090/health
-- Debug context: `GET /users/{user_id}/context`
-- Recommendations: `POST /recommendations` with body `{"user_id": 1234}`
+| Endpoint | Purpose |
+|----------|---------|
+| http://localhost:8090/docs | Swagger UI |
+| `GET /health` | API + ChromaDB document count |
+| `GET /users/{user_id}/context` | Raw purchase + similar context |
+| `POST /recommendations` | Recommendation JSON |
 
-### Enable real Claude (optional)
+**LLM modes:** `USE_MOCK_LLM=true` (default) runs locally with no API key. Set `USE_MOCK_LLM=false` and add `ANTHROPIC_API_KEY` in `.env` for live Claude calls (billed per token; separate from a Claude Pro chat subscription).
 
-In `.env`:
+---
 
-```
-USE_MOCK_LLM=false
-ANTHROPIC_API_KEY=sk-ant-...
-CLAUDE_MODEL=claude-3-haiku-20240307
-```
+## Resiliency
 
-Restart uvicorn. Each request sends one small API call.
+- **Dead-letter queue** — invalid records saved under `src/dlq_vault/` instead of killing the consumer
+- **Idempotent upserts** — deterministic UUID from `user_id` + `event_time` prevents duplicates on redelivery
+- **Independent forks** — ChromaDB and BigQuery failures are handled separately; one side failing does not block the other
+- **Batch flushes** — small batches with latency logged on each flush
 
-### Verified Output
+---
 
-Successful recommendation from ChromaDB context via mock LLM (`POST /recommendations`, HTTP 200):
+## Tech stack
 
-![Recommendation API success](./assets/recommendation_api_success.png)
+| Layer | Technology |
+|-------|------------|
+| Ingestion | Apache Kafka (KRaft) |
+| Processing | Python, confluent-kafka |
+| Vector store | ChromaDB |
+| Warehouse | Google BigQuery (sandbox) |
+| Orchestration | Apache Airflow 2.9 |
+| API | FastAPI, Uvicorn |
+| Infra | Docker Compose |
+
+Airflow dependencies install inside the Docker image at startup (`apache-airflow-providers-google`). Local Python deps are in `requirements.txt`.
 
 ---
 
 ## Quickstart
 
-**1. Clone the repository and navigate into it.**
-
-**2. Start the Docker infrastructure (Kafka, Flink, Airflow):**
 ```bash
+# 1. Infrastructure
 docker-compose up -d
-```
 
-Airflow UI: http://localhost:8088 (login `admin` / `admin`). DAGs live in `dags/` and are paused on first load.
-
-**3. Set up the Python environment:**
-```bash
+# 2. Python env
 python -m venv .venv
-.\.venv\Scripts\activate          # Windows
+.\.venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-**4. Add BigQuery credentials:**
-Create a Google Cloud service account with BigQuery Data Editor and BigQuery Job User roles, download the JSON key, and save it as `src/gcp_credentials.json`. This file is gitignored and must never be committed. The same file is mounted into the Airflow container for DAG tasks.
+# 3. GCP key → src/gcp_credentials.json (gitignored)
 
-**5. Run the pipeline (two terminals):**
-```bash
-# Terminal 1 — event generator
+# 4. Stream (two terminals)
 python src/producer.py
-
-# Terminal 2 — processor
 python src/processor.py
+
+# 5. Recommendations (third terminal)
+uvicorn src.recommendation_api:app --reload --port 8090
 ```
 
-**6. Verify the output:**
-- Kafka UI: http://localhost:8080
-- Airflow: http://localhost:8088 — DAG `clickstream_pipeline_health`
-- BigQuery: run `SELECT * FROM clickstream_analytics.purchase_events ORDER BY ingested_at DESC LIMIT 20` in the BigQuery console.
+**Checks:** Kafka UI :8080 · Airflow :8088 · API :8090/docs · BigQuery `SELECT * FROM clickstream_analytics.purchase_events ORDER BY ingested_at DESC LIMIT 20`
 
 ---
 
-## Project Structure
+## Project layout
 
 ```
 realtime_clickstream_ai_engine/
-├── dags/                          # Airflow DAG definitions (Phase 6)
-│   └── clickstream_pipeline_health.py
-├── logs/                          # Airflow runtime logs (gitignored)
+├── dags/clickstream_pipeline_health.py
+├── logs/                          # Airflow logs (gitignored)
 ├── src/
-│   ├── producer.py                # Phase 1 — Kafka event generator
-│   ├── processor.py               # Phases 2–5 — filter, validate, dual-fork
-│   ├── recommendation_api.py    # Phase 7 — FastAPI + ChromaDB + LLM
-│   ├── gcp_credentials.json       # GCP key (gitignored — you provide this)
-│   ├── chroma_vault/              # ChromaDB data (gitignored)
-│   └── dlq_vault/                 # Dead-letter files (gitignored)
-├── .env.example                   # Phase 7 config template (copy to .env)
-├── docker-compose.yml             # Kafka, Flink, Airflow, Postgres
-├── requirements.txt               # Local Python dependencies
+│   ├── producer.py
+│   ├── processor.py
+│   ├── recommendation_api.py
+│   ├── gcp_credentials.json       # you provide — gitignored
+│   ├── chroma_vault/
+│   └── dlq_vault/
+├── .env.example
+├── docker-compose.yml
+├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Notes on Scale
+## Build milestones
 
-This runs single-threaded on one machine, which is intentional for local development and debugging. In a production deployment, the processor would run with multiple Kafka partitions and parallel consumers, the warehouse writes would use streaming inserts instead of load jobs for lower latency, and producer/processor jobs would be containerized and scheduled entirely through Airflow rather than manual terminals.
+- [x] Real-time ingestion (producer → Kafka)
+- [x] Stream processing (filter, validate, route)
+- [x] ChromaDB vector upserts
+- [x] DLQ, idempotent writes, batch telemetry
+- [x] BigQuery dual-fork
+- [x] Airflow orchestration
+- [x] Recommendation API
 
 ---
 
-## Roadmap
+## Notes on scale
 
-- [x] Phase 1 — Real-time ingestion (Python producer to Kafka)
-- [x] Phase 2 — Stream processing (filter, validate, route)
-- [x] Phase 3 — AI context storage (ChromaDB vector upserts)
-- [x] Phase 4 — Resiliency (dead-letter queue, idempotent upserts, batch telemetry)
-- [x] Phase 5 — Cloud warehouse (dual-fork to Google BigQuery)
-- [x] Phase 6 — Orchestration (Apache Airflow for scheduling and monitoring)
-- [x] Phase 7 — AI output layer (LLM reads ChromaDB to serve recommendations)
+Single-threaded on one machine by design. A production version would use partitioned Kafka topics, parallel consumers, streaming BigQuery inserts, and containerized jobs scheduled through Airflow instead of manual terminals.

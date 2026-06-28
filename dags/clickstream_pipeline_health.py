@@ -1,12 +1,9 @@
 """
-Phase 6 — Clickstream pipeline orchestration DAG.
+Daily BigQuery warehouse health check for the clickstream pipeline.
 
-Scheduled daily monitoring of the BigQuery warehouse fork:
-  1. Verify the purchase_events table is reachable
-  2. Summarize purchase volume and freshness for the last 24 hours
-
-Producer and processor continue to run as local Python processes; Airflow
-handles scheduling, retries, and run history for warehouse health checks.
+Tasks:
+  1. verify_warehouse_table — confirm purchase_events is reachable
+  2. summarize_recent_purchases — count and freshness for the last 24 hours
 """
 
 from datetime import datetime, timedelta

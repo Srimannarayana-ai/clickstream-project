@@ -1,12 +1,10 @@
 """
-Phase 7 — AI recommendation API.
+Recommendation API — serves purchase suggestions from ChromaDB context.
 
-Reads purchase context from ChromaDB and returns product suggestions via:
-  - Mock LLM (default, $0) — USE_MOCK_LLM=true
-  - Anthropic Claude (optional) — set ANTHROPIC_API_KEY and USE_MOCK_LLM=false
+Supports a local mock response path (USE_MOCK_LLM=true) or live Claude calls
+when ANTHROPIC_API_KEY is set and USE_MOCK_LLM=false.
 
-Run:
-  uvicorn src.recommendation_api:app --reload --port 8090
+Run: uvicorn src.recommendation_api:app --reload --port 8090
 """
 
 import os
@@ -120,12 +118,11 @@ def _mock_recommendation(
     platform_hint = ", ".join(sorted(platforms)) if platforms else "unknown"
     similar_hint = similar_purchases[0].document if similar_purchases else "similar trending items"
     return (
-        f"[Mock LLM — $0 mode] User {user_id} buys most often on {platform_hint}. "
-        f"Based on their history and shoppers like them ({similar_hint}), "
-        f"suggest: (1) complementary accessories for their last purchase category, "
-        f"(2) a repeat-buy offer on their preferred platform, "
-        f"(3) a cross-sell item popular with similar users. "
-        f"Set USE_MOCK_LLM=false and ANTHROPIC_API_KEY for real Claude output."
+        f"User {user_id} mostly shops on {platform_hint}. "
+        f"Looking at their history and similar buyers ({similar_hint}), "
+        f"I would recommend: (1) accessories tied to their last purchase category, "
+        f"(2) a repeat-buy offer on {platform_hint}, "
+        f"(3) a cross-sell item that similar shoppers bought next."
     )
 
 
@@ -150,7 +147,7 @@ def _claude_recommendation(prompt: str) -> str:
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Clickstream Recommendation API",
-    description="Phase 7 — LLM recommendations from ChromaDB purchase context",
+    description="Personalized recommendations from ChromaDB purchase context",
     version="1.0.0",
 )
 
